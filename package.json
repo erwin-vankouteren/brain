@@ -1,0 +1,16 @@
+{
+  "name": "personal-brain",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal knowledge graph (TheBrain-style) with inbox and actions. Local only.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js"
+  },
+  "dependencies": {
+    "pdfjs-dist": "6.4.299"
+  }
+}

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Brain</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="logo" href="#/">🧠 Brain</a>
+    <div class="search-wrap">
+      <input id="search" type="search" placeholder="Search thoughts, notes, actions…  ( / )" autocomplete="off">
+      <div id="search-suggest" class="suggest" hidden></div>
+    </div>
+    <button id="capture-btn" class="primary" title="Capture (c)">＋ Capture</button>
+  </header>
+  <div class="layout">
+    <nav class="side">
+      <a href="#/" data-nav="home">⌂ Home</a>
+      <a href="#/inbox" data-nav="inbox">📥 Inbox <span class="count" id="c-inbox"></span></a>
+      <a href="#/actions" data-nav="actions">☑ Actions <span class="count" id="c-actions"></span></a>
+      <h4>Recent</h4>
+      <div id="recent"></div>
+      <div class="hint">
+        <b>Shortcuts</b><br>
+        <kbd>c</kbd> capture · <kbd>/</kbd> search<br>
+        <kbd>i</kbd> inbox · <kbd>a</kbd> actions · <kbd>h</kbd> home<br>
+        Drop files anywhere to import.<br>
+        Type <kbd>@Name</kbd> in a picker to create a person.
+      </div>
+    </nav>
+    <main id="main"></main>
+  </div>
+  <div id="drop" hidden><div>Drop files to import<br><small id="drop-target"></small></div></div>
+  <div id="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
