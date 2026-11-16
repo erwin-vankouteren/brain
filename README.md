@@ -78,7 +78,14 @@ In any topic picker, type `@Name` to create a person.
 
 ## Data
 
-* Database: `data\brain.db`, plus the original imported files in `data\files\`. Back up the whole `data\` folder by copying it while the app is stopped.
+* Database: `data\brain.db` (SQLite), plus the original imported files in `data\files\`.
+* **Backup:** run `.\backup-brain.ps1`. It creates `backups\brain-backup-<date>_<time>.zip` with a consistent, integrity-checked copy of the database and the original files. It is safe to run while the app is running. Options:
+  * `-Destination D:\Backups\Brain` to write somewhere else;
+  * `-Keep 14` to keep only the newest 14 backups;
+  * `-DatabaseOnly` to skip the original files.
+
+  If PowerShell blocks the script, use `powershell -ExecutionPolicy Bypass -File .\backup-brain.ps1`.
+* **Restore:** stop the app, unzip a backup, copy `brain.db` to `data\brain.db` and `files\` to `data\files\`, then start the app.
 * Settings, as environment variables: `BRAIN_PORT` (4321), `BRAIN_DB`, `BRAIN_WATCH`.
 * The server listens on 127.0.0.1 only and rejects cross-site requests.
 * This folder is inside OneDrive, so the database is synced. Run the app on one machine at a time.
