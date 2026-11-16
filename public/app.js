@@ -4,7 +4,9 @@ const $ = (s, el = document) => el.querySelector(s);
 const main = $('#main');
 const todayStr = () => new Date().toLocaleDateString('sv-SE');
 const addDays = (d, n) => { const x = new Date(d + 'T00:00'); x.setDate(x.getDate() + n); return x.toLocaleDateString('sv-SE'); };
-let META = { kinds: [], sources: [], supported: [], watchDir: '' };
+let META = { kinds: [], sources: [], supported: [] };
+let BRAINS = [];      // all brains on this machine
+let BRAIN = null;     // the active brain: { id, name, type: 'local' | 'azure', inbox, ... }
 let current = { view: null, thought: null };
 let drawWires = null;
 
@@ -24,10 +26,13 @@ function h(tag, props, ...kids) {
   return el;
 }
 
+// Brain-specific API calls go to /api/b/<active brain>/...; /api/brains and /api/meta are global.
+const apiUrl = url => url.replace(/^\/api\/(?!brains\b|meta\b|b\/)/, () => `/api/b/${encodeURIComponent(BRAIN.id)}/`);
+
 async function api(method, url, body) {
   const opts = { method, headers: {} };
   if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
-  const r = await fetch(url, opts);
+  const r = await fetch(apiUrl(url), opts);
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.error || r.statusText);
   return data;
@@ -165,7 +170,7 @@ function captureModal({ item = null, thoughts = [] } = {}) {
     h('div', { class: 'wide' }, h('div', { class: 'muted', style: 'font-size:12px' }, 'Topics'), chips),
     !edit && h('div', { class: 'also wide' }, alsoCb, alsoTitle, alsoDue));
 
-  const { close } = modal(edit ? 'Edit item' : 'Capture', form, close => [
+  const { close } = modal(`${edit ? 'Edit item' : 'Capture'} · ${brainLabel()}`, form, close => [
     h('button', { onclick: close }, 'Cancel'),
     h('button', { class: 'primary', onclick: () => save(close) }, edit ? 'Save' : 'Save'),
   ]);
@@ -233,11 +238,11 @@ function itemCard(it, { inbox = false } = {}) {
       h('span', { class: 'muted' }, fmtDate(it.occurred_at)),
       h('span', { class: 'card-title' }, it.title),
       it.people && h('span', { class: 'muted' }, '· ' + it.people)),
-    it.file && /\.(png|jpe?g)$/i.test(it.file) && h('a', { href: `/api/items/${it.id}/file`, target: '_blank', title: 'Open image' },
-      h('img', { class: 'thumb', src: `/api/items/${it.id}/file`, alt: it.title, loading: 'lazy' })),
+    it.file && /\.(png|jpe?g)$/i.test(it.file) && h('a', { href: apiUrl(`/api/items/${it.id}/file`), target: '_blank', title: 'Open image' },
+      h('img', { class: 'thumb', src: apiUrl(`/api/items/${it.id}/file`), alt: it.title, loading: 'lazy' })),
     it.body && body, more,
     h('div', { class: 'card-foot' },
-      it.file && h('a', { class: 'from', href: `/api/items/${it.id}/file`, target: '_blank', title: 'Open the original file' }, `📎 ${it.file.replace(/^\d+-/, '')}`),
+      it.file && h('a', { class: 'from', href: apiUrl(`/api/items/${it.id}/file`), target: '_blank', title: 'Open the original file' }, `📎 ${it.file.replace(/^\d+-/, '')}`),
       ...it.thoughts.map(t => chip(t, async () => { await api('DELETE', `/api/items/${it.id}/thoughts/${t.id}`); render(); })),
       addTopicBtn(it.thoughts.map(t => t.id), async t => { await api('POST', `/api/items/${it.id}/thoughts/${t.id}`); render(); }),
       h('span', { class: 'spacer' }),
@@ -457,7 +462,7 @@ async function renderInbox() {
     h('h2', {}, `Inbox (${items.length})`),
     h('p', { class: 'muted' }, 'Everything captured but not yet triaged. Attach each item to topics or people, turn the to-dos into actions, then ✓ File it.'),
     ...(items.length ? items.map(it => itemCard(it, { inbox: true }))
-      : [h('div', { class: 'empty' }, `Inbox zero. Capture with c, drop files on this page, or save files into ${META.watchDir}`)]));
+      : [h('div', { class: 'empty' }, `Inbox zero. Capture with c, drop files on this page, or save files into ${BRAIN.inbox}`)]));
 }
 
 async function renderActions(tab) {
@@ -528,7 +533,8 @@ async function render() {
 }
 
 async function refreshSide() {
-  const s = await api('GET', '/api/stats');
+  let s;
+  try { s = await api('GET', '/api/stats'); } catch { return; }   // e.g. cloud brain temporarily unreachable
   const ci = $('#c-inbox'), ca = $('#c-actions');
   ci.textContent = s.inbox || '';
   ca.textContent = s.open ? (s.overdue ? `${s.overdue}! / ${s.open}` : s.open) : '';
@@ -591,7 +597,7 @@ document.addEventListener('keydown', e => {
   addEventListener('dragenter', e => {
     if (!hasFiles(e)) return;
     depth++;
-    $('#drop-target').textContent = current.thought ? `→ attached to “${current.thought.name}”` : '→ Inbox';
+    $('#drop-target').textContent = `${brainLabel()} → ${current.thought ? `attached to “${current.thought.name}”` : 'Inbox'}`;
     drop.hidden = false;
   });
   addEventListener('dragleave', e => { if (hasFiles(e) && --depth <= 0) { depth = 0; drop.hidden = true; } });
@@ -604,7 +610,7 @@ document.addEventListener('keydown', e => {
     const files = [...e.dataTransfer.files];
     if (files.some(f => /\.(pdf|png|jpe?g)$/i.test(f.name))) toast(`Importing ${files.length} file(s)… reading text from images/PDFs can take a few seconds`);
     for (const f of files) {
-      const r = await fetch(`/api/import?name=${encodeURIComponent(f.name)}${tid ? `&thought=${tid}` : ''}`, { method: 'POST', body: f });
+      const r = await fetch(apiUrl(`/api/import?name=`) + `${encodeURIComponent(f.name)}${tid ? `&thought=${tid}` : ''}`, { method: 'POST', body: f });
       if (r.ok) ok++; else failed.push(`${f.name}: ${(await r.json().catch(() => ({}))).error || r.statusText}`);
     }
     if (failed.length) toast(`Imported ${ok}. Failed: ${failed.join('; ')}`, true);
@@ -613,9 +619,143 @@ document.addEventListener('keydown', e => {
   });
 })();
 
+// ---------------------------------------------------------------- brains: switcher, new brain, manage
+const brainIcon = b => (b.type === 'local' ? '💻' : '☁️');
+const brainLabel = (b = BRAIN) => `${brainIcon(b)} ${b.name}`;
+const brainWhere = b => b.type === 'local' ? `Local (SQLite on this computer): ${b.db}` : `Azure SQL: ${b.server} / ${b.database}`;
+
+function drawBrainSwitch() {
+  document.documentElement.dataset.brainType = BRAIN.type;
+  $('#brain-switch').replaceChildren(h('button', {
+    class: `brain-btn ${BRAIN.type}`, title: `${brainWhere(BRAIN)}\nInbox folder: ${BRAIN.inbox}\nClick to switch brain`,
+    onclick: e => openBrainMenu(e.currentTarget),
+  }, brainLabel(), ' ▾'));
+}
+
+function openBrainMenu(anchor) {
+  closePicker();
+  const item = (label, cls, fn) => h('div', { class: cls, onmousedown: e => { e.preventDefault(); closePicker(); fn(); } }, label);
+  const box = h('div', { class: 'picker menu' }, h('div', { class: 'list' },
+    ...BRAINS.map(b => item(brainLabel(b) + (b.id === BRAIN.id ? '  ✓' : ''), b.id === BRAIN.id ? 'active' : '', () => switchBrain(b.id))),
+    h('hr'),
+    item('＋ New brain…', 'create', newBrainModal),
+    item('⚙ Manage brains…', '', manageBrainsModal)));
+  document.body.append(box);
+  const r = anchor.getBoundingClientRect();
+  box.style.left = Math.max(8, Math.min(r.left, innerWidth - 290)) + 'px';
+  box.style.top = r.bottom + 4 + 'px';
+  const outside = e => { if (!box.contains(e.target)) closePicker(); };
+  setTimeout(() => document.addEventListener('mousedown', outside), 0);
+  box._cleanup = () => document.removeEventListener('mousedown', outside);
+}
+
+function switchBrain(id) {
+  BRAIN = BRAINS.find(b => b.id === id) || BRAINS[0];
+  lsSet('brain.current', BRAIN.id);
+  current = { view: null, thought: null };
+  $('#search').value = '';
+  drawBrainSwitch();
+  if (location.hash === '' || location.hash === '#/' || location.hash === '#') render(); else location.hash = '#/';
+}
+
+async function reloadBrains(selectId) {
+  BRAINS = await api('GET', '/api/brains');
+  switchBrain(selectId && BRAINS.some(b => b.id === selectId) ? selectId : (BRAINS.find(b => b.id === BRAIN?.id) || BRAINS[0]).id);
+}
+
+function newBrainModal() {
+  const name = h('input', { placeholder: 'e.g. Personal brain' });
+  const typeLocal = h('input', { type: 'radio', name: 'btype', value: 'local', checked: true });
+  const typeAzure = h('input', { type: 'radio', name: 'btype', value: 'azure' });
+  const server = h('input', { placeholder: 'myserver.database.windows.net' });
+  const database = h('input', { placeholder: 'brain' });
+  const auth = h('select', {}, h('option', { value: 'entra' }, 'Microsoft account (Entra ID)'), h('option', { value: 'sql' }, 'SQL login (user + password)'));
+  const tenantId = h('input', { placeholder: 'Optional: tenant ID or domain of your personal Azure (e.g. contoso.onmicrosoft.com)' });
+  const user = h('input', { placeholder: 'SQL user', autocomplete: 'off' });
+  const password = h('input', { type: 'password', placeholder: 'Password (stored encrypted with Windows DPAPI)', autocomplete: 'new-password' });
+  const inbox = h('input', { placeholder: 'Default: inbox-<name> in the app folder' });
+  const entraBox = h('label', { class: 'wide' }, 'Tenant', tenantId);
+  const sqlBox = h('div', { class: 'wide form', style: 'grid-template-columns:1fr 1fr' }, h('label', {}, 'User', user), h('label', {}, 'Password', password));
+  const azureBox = h('div', { class: 'wide form', style: 'grid-template-columns:1fr 1fr' },
+    h('label', {}, 'Server', server), h('label', {}, 'Database', database),
+    h('label', { class: 'wide' }, 'Sign-in', auth), entraBox, sqlBox,
+    h('p', { class: 'wide muted', style: 'margin:0;font-size:12px' },
+      'Microsoft account: sign in once with Azure CLI (az login --tenant <tenant>) or VS Code. ',
+      'Make sure the Azure SQL firewall allows this computer’s IP address.'));
+  const note = h('p', { class: 'wide muted', style: 'margin:0;font-size:12px' });
+  const sync = () => {
+    const az = typeAzure.checked;
+    azureBox.hidden = !az;
+    entraBox.hidden = auth.value !== 'entra';
+    sqlBox.hidden = auth.value !== 'sql';
+    note.textContent = az
+      ? '☁️ Stored in your Azure SQL database, so you can open it from every laptop where you add it. Original files are stored in the database too.'
+      : '💻 Stored only on this computer in a SQLite file. A local brain never uses the cloud.';
+  };
+  for (const el of [typeLocal, typeAzure, auth]) el.addEventListener('change', sync);
+  sync();
+  const form = h('div', { class: 'form' },
+    h('label', { class: 'wide' }, 'Name', name),
+    h('div', { class: 'wide brain-type' },
+      h('label', {}, typeLocal, ' 💻 Local (this computer only)'),
+      h('label', {}, typeAzure, ' ☁️ Azure SQL (cloud, shared between laptops)')),
+    note, azureBox,
+    h('label', { class: 'wide' }, 'Inbox folder (watched for new files)', inbox));
+  let saving = false;
+  modal('New brain', form, close => {
+    const btn = h('button', { class: 'primary', onclick: async () => {
+      if (saving) return;
+      saving = true; btn.disabled = true; btn.textContent = typeAzure.checked ? 'Connecting… (a paused database can take a minute)' : 'Creating…';
+      try {
+        const b = await api('POST', '/api/brains', {
+          name: name.value, type: typeAzure.checked ? 'azure' : 'local', inbox: inbox.value,
+          server: server.value, database: database.value, auth: auth.value, tenantId: tenantId.value, user: user.value, password: password.value,
+        });
+        toast(`Brain “${b.name}” created`);
+        close();
+        await reloadBrains(b.id);
+      } catch (e) { toast(e.message, true); }
+      finally { saving = false; btn.disabled = false; btn.textContent = 'Create brain'; }
+    } }, 'Create brain');
+    return [h('button', { onclick: close }, 'Cancel'), btn];
+  });
+  name.focus();
+}
+
+function manageBrainsModal() {
+  const rows = BRAINS.map(b => {
+    const name = h('input', { value: b.name });
+    const inbox = h('input', { value: b.inbox });
+    const pw = b.type === 'azure' && b.auth === 'sql' ? h('input', { type: 'password', placeholder: 'New SQL password (leave empty to keep)', autocomplete: 'new-password' }) : null;
+    return h('div', { class: 'brain-row' },
+      h('div', { class: 'brain-row-head' }, h('b', {}, brainLabel(b)), b.id === BRAIN.id && h('span', { class: 'badge' }, 'active')),
+      h('div', { class: 'muted', style: 'font-size:12px;word-break:break-all' }, brainWhere(b)),
+      h('div', { class: 'form', style: 'grid-template-columns:1fr 2fr;margin-top:6px' },
+        h('label', {}, 'Name', name), h('label', {}, 'Inbox folder', inbox), pw && h('label', { class: 'wide' }, 'Password', pw)),
+      h('div', { class: 'card-foot' },
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'link danger', onclick: async () => {
+          if (!confirm(`Remove “${b.name}” from this computer's list?\n\nThe data itself is NOT deleted (${b.type === 'local' ? 'the SQLite file stays on disk' : 'the Azure database is untouched'}). You can add it again later.`)) return;
+          try { await api('DELETE', `/api/brains/${encodeURIComponent(b.id)}`); toast('Removed from list'); closeAll(); await reloadBrains(); } catch (e) { toast(e.message, true); }
+        } }, 'Remove from list'),
+        h('button', { onclick: async () => {
+          try {
+            await api('PATCH', `/api/brains/${encodeURIComponent(b.id)}`, { name: name.value, inbox: inbox.value, ...(pw && pw.value ? { password: pw.value } : {}) });
+            toast('Saved'); closeAll(); await reloadBrains();
+          } catch (e) { toast(e.message, true); }
+        } }, 'Save')));
+  });
+  let closeAll = () => {};
+  const m = modal('Manage brains', h('div', {}, ...rows), close => [h('button', { onclick: close }, 'Close')]);
+  closeAll = m.close;
+}
+
 // ---------------------------------------------------------------- start
 (async () => {
   META = await api('GET', '/api/meta');
+  BRAINS = await api('GET', '/api/brains');
+  BRAIN = BRAINS.find(b => b.id === lsGet('brain.current', '')) || BRAINS[0];
+  drawBrainSwitch();
   render();
   setInterval(refreshSide, 15000); // picks up files imported by the folder watcher
 })();

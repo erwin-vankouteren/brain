@@ -2,3 +2,5 @@ data/
 inbox/
 node_modules/
 backups/
+inbox-*/
+brains.json

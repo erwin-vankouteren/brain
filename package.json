@@ -2,7 +2,7 @@
   "name": "personal-brain",
   "version": "0.1.0",
   "private": true,
-  "description": "Personal knowledge graph (TheBrain-style) with inbox and actions. Local only.",
+  "description": "Personal knowledge graph (TheBrain-style) with inbox and actions. Local (SQLite) and cloud (Azure SQL) brains.",
   "type": "module",
   "engines": {
     "node": ">=22.13"
@@ -11,6 +11,12 @@
     "start": "node --disable-warning=ExperimentalWarning server.js"
   },
   "dependencies": {
+    "@azure/identity": "4.14.1",
+    "mssql": "12.7.11",
     "pdfjs-dist": "6.4.299"
+  },
+  "overrides": {
+    "tedious": "20.3.8",
+    "@azure/msal-node": "7.1.2"
   }
 }

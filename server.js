@@ -1,114 +1,119 @@
-// Personal Brain — local server. Listens on 127.0.0.1 only; data stays on this machine.
+// Personal Brain — local server. Listens on 127.0.0.1 only.
+// Serves several brains: local ones (SQLite on this machine) and cloud ones (Azure SQL). See src/brains.js.
 import http from 'node:http';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { Brain, HttpError, KINDS, SOURCES } from './src/db.js';
+import { HttpError, KINDS, SOURCES } from './src/db.js';
 import { parseFile, SUPPORTED, IMAGE_EXT } from './src/importers.js';
+import { BrainManager } from './src/brains.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.BRAIN_PORT || 4321);
-const DB_FILE = process.env.BRAIN_DB || path.join(ROOT, 'data', 'brain.db');
-const FILES_DIR = path.join(path.dirname(DB_FILE), 'files');
-const WATCH_DIR = process.env.BRAIN_WATCH || path.join(ROOT, 'inbox');
 const PUBLIC = path.join(ROOT, 'public');
+const TMP = path.join(os.tmpdir(), 'brain-import');
+fs.mkdirSync(TMP, { recursive: true });
 
-const brain = new Brain(DB_FILE);
-fs.mkdirSync(FILES_DIR, { recursive: true });
+// BRAIN_HOME: folder that holds brains.json, data\ and the inbox folders (default: the app folder)
+const brains = new BrainManager(process.env.BRAIN_HOME ? path.resolve(process.env.BRAIN_HOME) : ROOT);
 
-// ---------- import (shared by upload + folder watch). The original file is kept in data/files.
-async function importFile(name, buf, { thoughtId, mtime } = {}) {
+// ---------- import (shared by upload + folder watch). The original file is kept by the brain's file store.
+async function importFile(ctx, name, buf, { thoughtId, mtime } = {}) {
   const ext = path.extname(name).toLowerCase();
   if (!SUPPORTED.includes(ext)) throw new HttpError(400, `Unsupported file type "${ext}". Supported: ${SUPPORTED.join(' ')}`);
-  const safe = path.basename(name).replace(/[^\w.\- ()]+/g, '_').slice(-120);
-  const tmp = path.join(FILES_DIR, `tmp-${process.hrtime.bigint()}${ext}`);
+  const tmp = path.join(TMP, `${process.hrtime.bigint()}${ext}`);
   fs.writeFileSync(tmp, buf);
   try {
     const parsed = await parseFile(name, buf, { mtime, filePath: tmp });
     const thoughtIds = thoughtId ? [Number(thoughtId)] : [];
-    const item = brain.createItem({ ...parsed, thoughtIds, status: thoughtIds.length ? 'filed' : 'inbox' });
-    const stored = `${item.id}-${safe}`;
-    fs.renameSync(tmp, path.join(FILES_DIR, stored));
-    return brain.setItemFile(item.id, stored);
-  } catch (e) {
+    const item = await ctx.brain.createItem({ ...parsed, thoughtIds, status: thoughtIds.length ? 'filed' : 'inbox' });
+    const stored = await ctx.files.save(item.id, name, tmp);
+    return ctx.brain.setItemFile(item.id, stored);
+  } finally {
     fs.rmSync(tmp, { force: true });
-    throw e;
   }
 }
 
 // ---------- routes
 const routes = [];
 const route = (method, pattern, fn) => routes.push({ method, re: new RegExp('^' + pattern.replace(/:(\w+)/g, '(?<$1>[^/]+)') + '$'), fn });
+// Brain-scoped route: /api/b/<brainId>/...  ctx = { brain, files, cfg }
+const broute = (method, pattern, fn) => route(method, '/api/b/:brainId' + pattern, async (args, q) => fn({ ...args, ctx: await brains.get(args.p.brainId) }, q));
 const id = v => { const n = Number(v); if (!Number.isInteger(n)) throw new HttpError(400, 'Bad id'); return n; };
 
-route('GET', '/api/meta', () => ({ kinds: KINDS, sources: SOURCES, supported: SUPPORTED, watchDir: WATCH_DIR }));
-route('GET', '/api/stats', () => brain.stats());
-route('GET', '/api/search', (_, q) => brain.search(q.get('q')));
+route('GET', '/api/meta', () => ({ kinds: KINDS, sources: SOURCES, supported: SUPPORTED }));
+route('GET', '/api/brains', () => brains.list());
+route('POST', '/api/brains', async ({ body }) => { const b = await brains.create(body); return b; });
+route('PATCH', '/api/brains/:id', ({ p, body }) => brains.update(p.id, body));
+route('DELETE', '/api/brains/:id', ({ p }) => brains.remove(p.id));
 
-route('GET', '/api/thoughts', (_, q) => brain.listThoughts(q.get('q') || '', Number(q.get('limit') || 20)));
-route('POST', '/api/thoughts', ({ body }) => brain.createThought(body.name, body.kind));
-route('GET', '/api/thoughts/:id', ({ p }) => brain.getThought(p.id === 'home' ? brain.homeId() : id(p.id)));
-route('PATCH', '/api/thoughts/:id', ({ p, body }) => brain.updateThought(id(p.id), body));
-route('DELETE', '/api/thoughts/:id', ({ p }) => brain.deleteThought(id(p.id)));
-route('POST', '/api/thoughts/:id/home', ({ p }) => (brain.setHome(id(p.id)), { ok: true }));
+broute('GET', '/stats', ({ ctx }) => ctx.brain.stats());
+broute('GET', '/search', ({ ctx }, q) => ctx.brain.search(q.get('q')));
 
-route('POST', '/api/thoughts/:id/weblinks', ({ p, body }) => brain.addWeblink(id(p.id), body));
-route('PATCH', '/api/weblinks/:id', ({ p, body }) => brain.updateWeblink(id(p.id), body));
-route('DELETE', '/api/weblinks/:id', ({ p }) => brain.deleteWeblink(id(p.id)));
+broute('GET', '/thoughts', ({ ctx }, q) => ctx.brain.listThoughts(q.get('q') || '', Number(q.get('limit') || 20)));
+broute('POST', '/thoughts', ({ ctx, body }) => ctx.brain.createThought(body.name, body.kind));
+broute('GET', '/thoughts/:id', async ({ ctx, p }) => ctx.brain.getThought(p.id === 'home' ? await ctx.brain.homeId() : id(p.id)));
+broute('PATCH', '/thoughts/:id', ({ ctx, p, body }) => ctx.brain.updateThought(id(p.id), body));
+broute('DELETE', '/thoughts/:id', ({ ctx, p }) => ctx.brain.deleteThought(id(p.id)));
+broute('POST', '/thoughts/:id/home', async ({ ctx, p }) => { await ctx.brain.setHome(id(p.id)); return { ok: true }; });
+
+broute('POST', '/thoughts/:id/weblinks', ({ ctx, p, body }) => ctx.brain.addWeblink(id(p.id), body));
+broute('PATCH', '/weblinks/:id', ({ ctx, p, body }) => ctx.brain.updateWeblink(id(p.id), body));
+broute('DELETE', '/weblinks/:id', ({ ctx, p }) => ctx.brain.deleteWeblink(id(p.id)));
 // Browsers can't open local files from a web page, so the server opens a *saved* file link in its default app.
-route('POST', '/api/weblinks/:id/open', ({ p, body }) => {
-  const l = brain.getWeblink(id(p.id));
+broute('POST', '/weblinks/:id/open', async ({ ctx, p, body }) => {
+  const l = await ctx.brain.getWeblink(id(p.id));
   if (l.kind !== 'file') throw new HttpError(400, 'Not a file link');
-  if (!fs.existsSync(l.url)) throw new HttpError(404, `File not found: ${l.url}`);
-  const args = body.reveal ? [`/select,${l.url}`] : [l.url];
-  spawn('explorer.exe', args, { detached: true, stdio: 'ignore', windowsHide: false }).unref();
+  if (!fs.existsSync(l.url)) throw new HttpError(404, `File not found on this computer: ${l.url}`);
+  spawn('explorer.exe', body.reveal ? [`/select,${l.url}`] : [l.url], { detached: true, stdio: 'ignore' }).unref();
   return { ok: true };
 });
 
-route('POST', '/api/links',({ body }) => brain.link(id(body.from), id(body.to), body.rel));
-route('DELETE', '/api/links/:a/:b', ({ p }) => brain.unlink(id(p.a), id(p.b)));
+broute('POST', '/links', ({ ctx, body }) => ctx.brain.link(id(body.from), id(body.to), body.rel));
+broute('DELETE', '/links/:a/:b', ({ ctx, p }) => ctx.brain.unlink(id(p.a), id(p.b)));
 
-route('GET', '/api/items', (_, q) => brain.listItems({ status: q.get('status') || undefined }));
-route('POST', '/api/items', ({ body }) => brain.createItem(body));
-route('GET', '/api/items/:id', ({ p }) => brain.getItem(id(p.id)));
-route('PATCH', '/api/items/:id', ({ p, body }) => brain.updateItem(id(p.id), body));
-route('DELETE', '/api/items/:id', ({ p }) => {
-  const r = brain.deleteItem(id(p.id));
-  if (r.file) fs.rmSync(path.join(FILES_DIR, path.basename(r.file)), { force: true });
+broute('GET', '/items', ({ ctx }, q) => ctx.brain.listItems({ status: q.get('status') || undefined }));
+broute('POST', '/items', ({ ctx, body }) => ctx.brain.createItem(body));
+broute('GET', '/items/:id', ({ ctx, p }) => ctx.brain.getItem(id(p.id)));
+broute('PATCH', '/items/:id', ({ ctx, p, body }) => ctx.brain.updateItem(id(p.id), body));
+broute('DELETE', '/items/:id', async ({ ctx, p }) => {
+  const r = await ctx.brain.deleteItem(id(p.id));
+  await ctx.files.remove(r.file);
   return { ok: true };
 });
-route('GET', '/api/items/:id/file', ({ p, res }) => {
-  const it = brain.getItem(id(p.id));
-  const full = it.file && path.join(FILES_DIR, path.basename(it.file));
-  if (!full || !fs.existsSync(full)) throw new HttpError(404, 'Original file not available');
-  const ext = path.extname(full).toLowerCase();
+broute('GET', '/items/:id/file', async ({ ctx, p, res }) => {
+  const it = await ctx.brain.getItem(id(p.id));
+  const f = await ctx.files.read(it);
+  if (!f) throw new HttpError(404, 'Original file not available');
+  const ext = path.extname(f.name).toLowerCase();
   const inline = ['.pdf', '.txt', '.md', '.log', ...IMAGE_EXT].includes(ext);
-  const name = it.file.replace(/^\d+-/, '');
   res.writeHead(200, {
     'Content-Type': FILE_MIME[ext] || 'application/octet-stream',
-    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(name)}`,
-    'X-Content-Type-Options': 'nosniff',
+    'Content-Length': f.data.length,
+    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(f.name)}`,
+    'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=3600',
     // lock down text/images; PDFs are left to the browser's own (sandboxed) PDF viewer
     ...(ext === '.pdf' ? {} : { 'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'" }),
   });
-  fs.createReadStream(full).pipe(res);
+  res.end(f.data);
   return RAW;
 });
-route('POST', '/api/items/:id/thoughts/:tid', ({ p }) => brain.attachItem(id(p.id), id(p.tid)));
-route('DELETE', '/api/items/:id/thoughts/:tid', ({ p }) => brain.detachItem(id(p.id), id(p.tid)));
+broute('POST', '/items/:id/thoughts/:tid', ({ ctx, p }) => ctx.brain.attachItem(id(p.id), id(p.tid)));
+broute('DELETE', '/items/:id/thoughts/:tid', ({ ctx, p }) => ctx.brain.detachItem(id(p.id), id(p.tid)));
 
-route('GET', '/api/actions', (_, q) => brain.listActions({ status: q.get('status') || undefined }));
-route('POST', '/api/actions', ({ body }) => brain.createAction(body));
-route('PATCH', '/api/actions/:id', ({ p, body }) => brain.updateAction(id(p.id), body));
-route('DELETE', '/api/actions/:id', ({ p }) => brain.deleteAction(id(p.id)));
-route('POST', '/api/actions/:id/thoughts/:tid', ({ p }) => brain.attachAction(id(p.id), id(p.tid)));
-route('DELETE', '/api/actions/:id/thoughts/:tid', ({ p }) => brain.detachAction(id(p.id), id(p.tid)));
+broute('GET', '/actions', ({ ctx }, q) => ctx.brain.listActions({ status: q.get('status') || undefined }));
+broute('POST', '/actions', ({ ctx, body }) => ctx.brain.createAction(body));
+broute('PATCH', '/actions/:id', ({ ctx, p, body }) => ctx.brain.updateAction(id(p.id), body));
+broute('DELETE', '/actions/:id', ({ ctx, p }) => ctx.brain.deleteAction(id(p.id)));
+broute('POST', '/actions/:id/thoughts/:tid', ({ ctx, p }) => ctx.brain.attachAction(id(p.id), id(p.tid)));
+broute('DELETE', '/actions/:id/thoughts/:tid', ({ ctx, p }) => ctx.brain.detachAction(id(p.id), id(p.tid)));
 
-route('POST', '/api/import', ({ raw }, q) => {
+broute('POST', '/import', ({ ctx, raw }, q) => {
   const name = q.get('name');
   if (!name) throw new HttpError(400, 'name is required');
-  return importFile(name, raw, { thoughtId: q.get('thought') || undefined })
+  return importFile(ctx, name, raw, { thoughtId: q.get('thought') || undefined })
     .catch(e => { throw e instanceof HttpError ? e : new HttpError(400, e.message); });
 });
 
@@ -118,7 +123,7 @@ const FILE_MIME = { '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'ima
   '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8', '.log': 'text/plain; charset=utf-8',
   '.eml': 'message/rfc822', '.msg': 'application/vnd.ms-outlook', '.vtt': 'text/vtt',
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
-const MIME ={ '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -161,48 +166,68 @@ const server = http.createServer(async (req, res) => {
     send(res, 200, fs.readFileSync(file), MIME[path.extname(file)] || 'application/octet-stream');
   } catch (e) {
     if (!(e instanceof HttpError) && !(e instanceof SyntaxError)) console.error(e);
+    if (res.headersSent) return res.end();
     send(res, e.status || (e instanceof SyntaxError ? 400 : 500), { error: e.message });
   }
 });
 
-// ---------- folder watch: drop files in ./inbox, they become inbox items
-function startWatcher() {
-  const done = path.join(WATCH_DIR, '_imported');
-  const failed = path.join(WATCH_DIR, '_failed');
-  for (const d of [WATCH_DIR, done, failed]) fs.mkdirSync(d, { recursive: true });
-  const seen = new Map(); // name -> size at last poll, so we only import files that stopped growing
-  let busy = false;       // OCR can take a while; never run two polls at once
-  setInterval(async () => {
-    if (busy) return;
-    busy = true;
-    try { await poll(); } finally { busy = false; }
-  }, 2000);
-  async function poll() {
-    let names;
-    try { names = fs.readdirSync(WATCH_DIR); } catch { return; }
-    for (const name of names) {
-      const full = path.join(WATCH_DIR, name);
-      let st; try { st = fs.statSync(full); } catch { continue; }
-      if (!st.isFile() || name.startsWith('~$') || name.startsWith('.')) continue;
-      if (!SUPPORTED.includes(path.extname(name).toLowerCase())) continue;
-      if (seen.get(name) !== st.size) { seen.set(name, st.size); continue; }
-      seen.delete(name);
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      try {
-        const item = await importFile(name, fs.readFileSync(full), { mtime: st.mtime });
-        fs.renameSync(full, path.join(done, `${stamp}_${name}`));
-        console.log(`[watch] imported "${name}" -> inbox item #${item.id}`);
-      } catch (e) {
-        console.warn(`[watch] could not import "${name}": ${e.message}`);
-        try { fs.renameSync(full, path.join(failed, `${stamp}_${name}`)); } catch {}
-      }
+// ---------- folder watch: every brain has its own inbox folder; files dropped there become inbox items of that brain
+const watched = new Map();   // brainId -> inbox dir
+const busy = new Set();
+const seen = new Map();      // full path -> size at last poll (only import files that stopped growing)
+
+function syncWatchers() {
+  watched.clear();
+  for (const b of brains.list()) {
+    for (const d of [b.inbox, path.join(b.inbox, '_imported'), path.join(b.inbox, '_failed')]) fs.mkdirSync(d, { recursive: true });
+    watched.set(b.id, b.inbox);
+  }
+}
+brains.onChange = syncWatchers;
+
+async function pollBrain(brainId, dir) {
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return; }
+  const ready = [];
+  for (const name of names) {
+    const full = path.join(dir, name);
+    let st; try { st = fs.statSync(full); } catch { continue; }
+    if (!st.isFile() || name.startsWith('~$') || name.startsWith('.')) continue;
+    if (!SUPPORTED.includes(path.extname(name).toLowerCase())) continue;
+    if (seen.get(full) !== st.size) { seen.set(full, st.size); continue; }
+    seen.delete(full);
+    ready.push({ name, full, st });
+  }
+  if (!ready.length) return;
+  let ctx;
+  try { ctx = await brains.get(brainId); }
+  catch (e) { console.warn(`[watch:${brainId}] brain not available, will retry: ${e.message}`); return; }
+  for (const { name, full, st } of ready) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    try {
+      const item = await importFile(ctx, name, fs.readFileSync(full), { mtime: st.mtime });
+      fs.renameSync(full, path.join(dir, '_imported', `${stamp}_${name}`));
+      console.log(`[watch:${brainId}] imported "${name}" -> inbox item #${item.id}`);
+    } catch (e) {
+      console.warn(`[watch:${brainId}] could not import "${name}": ${e.message}`);
+      try { fs.renameSync(full, path.join(dir, '_failed', `${stamp}_${name}`)); } catch {}
     }
   }
 }
 
-startWatcher();
+setInterval(() => {
+  for (const [brainId, dir] of watched) {
+    if (busy.has(brainId)) continue;      // OCR / cloud calls can take a while; one poll per brain at a time
+    busy.add(brainId);
+    pollBrain(brainId, dir).finally(() => busy.delete(brainId));
+  }
+}, 2000);
+
+syncWatchers();
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`Brain is running:  http://localhost:${PORT}`);
-  console.log(`Database:          ${DB_FILE}`);
-  console.log(`Watched folder:    ${WATCH_DIR}  (${SUPPORTED.join(' ')})`);
+  for (const b of brains.list()) {
+    console.log(`  ${b.type === 'local' ? '[local]' : '[azure]'} ${b.name}: ${b.type === 'local' ? b.db : `${b.server}/${b.database}`}`);
+    console.log(`          inbox folder: ${b.inbox}`);
+  }
 });

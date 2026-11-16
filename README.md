@@ -1,7 +1,7 @@
 # Brain
 
 A personal, TheBrain-style knowledge graph with an inbox for everything you capture and a list of actions.
-It runs locally: a small Node server on `http://localhost:4321` with a SQLite file. It has no dependencies and sends nothing to the internet.
+It runs as a small Node server on `http://localhost:4321`. You can keep several **brains**: *local* brains (a SQLite file on this computer) and *cloud* brains (an Azure SQL database you can open from more than one laptop).
 
 ## Start
 
@@ -11,7 +11,32 @@ Double-click `start-brain.cmd`, or run:
 npm start
 ```
 
-It needs Node.js 22.13 or newer, because it uses the built-in `node:sqlite`. Run `npm install` once to get `pdfjs-dist`, the library that reads text from PDFs. It is already installed in this folder.
+It needs Node.js 22.13 or newer, because it uses the built-in `node:sqlite`. Run `npm install` once to get the libraries: `pdfjs-dist` reads text from PDFs, and `mssql` with `@azure/identity` is used only by cloud brains.
+
+## Brains: local and cloud
+
+The brain switcher in the header shows which brain you're in, and the bar at the top of the window is coloured to match:
+
+* **💻 Local brain (green).** A SQLite file on this computer, with the original files in a folder next to it. A local brain **never** uses the network or Azure: it can only be opened with SQLite. Use this for work information, to stay within company policy. Your original brain is the local **Work brain** (`data\brain.db`, inbox folder `inbox\`).
+* **☁️ Cloud brain (blue).** An Azure SQL database. Add the same database on every laptop (for example your personal laptop and your work laptop), and they all see the same content. Original files (PDFs, images, mails) are stored in the database too.
+
+Every brain has its own Inbox and its own watched inbox folder on this computer. By default the folder is `inbox-<name>\` in the app folder, and you can change it in *Manage brains*. Items never move between brains.
+
+**New brain:** click the brain switcher, then *＋ New brain…*. **Rename, change the inbox folder, or remove from this computer's list:** *⚙ Manage brains…*. Removing a brain from the list never deletes its data.
+
+The list of brains on a computer is kept in `brains.json`. It isn't in git, because every laptop has its own list.
+
+### Setting up a cloud brain (Azure SQL free offer)
+
+1. In the Azure portal, create an **Azure SQL Database** and choose **Apply offer** for the free offer (serverless, €0 within the monthly free limits). Create a new server along with it.
+2. **Sign-in to the server.** Choose one:
+   * **Microsoft Entra (recommended, no password stored).** Make yourself the Entra admin of the server. On each laptop, install the Azure CLI and run `az login --tenant <your-tenant>` once. In the app, choose *Microsoft account* and fill in the tenant, so a work account is never used by mistake.
+   * **SQL authentication.** Create a SQL login. The app encrypts the password with Windows DPAPI, so it can only be decrypted by your Windows user on that laptop.
+3. **Networking.** Allow public access and add a firewall rule for each laptop's public IP address. Some company networks block outgoing port 1433. In that case the work laptop can't reach the database while it's on the company network.
+4. In the app, choose *＋ New brain…* → *Azure SQL*, then enter the server (`<name>.database.windows.net`) and the database name. The app creates its tables on first connect.
+5. Repeat step 4 on the other laptop, with the same server and database.
+
+After an idle period the free database pauses. The first action after that can take up to a minute while it wakes up.
 
 ## Concepts
 
@@ -30,7 +55,7 @@ Each thought page shows **Notes** (what I need to know), **Actions** (what I nee
 
 * **Capture** (`c` or the ＋ Capture button). Paste anything, pick the source, add topics and optionally an action in the same step. When you're on a thought, it is pre-attached.
 * **Drop files** onto the page. On a thought page, the file is attached to that thought. Elsewhere, it goes to the Inbox.
-* **Folder watch.** Save or copy files into `inbox\`. They are imported within a few seconds and moved to `inbox\_imported\`. Files that fail go to `inbox\_failed\`.
+* **Folder watch.** Save or copy files into the brain's inbox folder (`inbox\` for the Work brain). They are imported into that brain within a few seconds and moved to `_imported\` inside that folder. Files that fail go to `_failed\`.
 
 Supported files:
 
@@ -42,7 +67,7 @@ Supported files:
 | `.pdf` | The PDF's text. Scanned PDFs without text are read with Windows OCR, up to 30 pages. |
 | `.png .jpg .jpeg` | Text recognised with the OCR built into Windows. The image is shown on the card. |
 
-The original file is kept in `data\files\`, and each card has a 📎 link to open it.
+The original file is kept, and each card has a 📎 link to open it. Local brains store it in the `files\` folder next to their database; cloud brains store it in the database.
 
 **About the OCR.** It runs offline and uses the OCR languages installed in Windows. Only English (en-US) is installed on this machine right now. For Dutch, go to *Settings → Time & language → Language & region*, add Dutch, and make sure *Optical character recognition* is included. Handwriting is recognised poorly. Printed text and screenshots work well.
 
@@ -78,14 +103,15 @@ In any topic picker, type `@Name` to create a person.
 
 ## Data
 
-* Database: `data\brain.db` (SQLite), plus the original imported files in `data\files\`.
-* **Backup:** run `.\backup-brain.ps1`. It creates `backups\brain-backup-<date>_<time>.zip` with a consistent, integrity-checked copy of the database and the original files. It is safe to run while the app is running. Options:
+* **Work brain:** `data\brain.db` (SQLite), plus the original imported files in `data\files\`. Other local brains are in `data\brains\<id>\`. Cloud brains are in Azure SQL.
+* **Backup:** run `.\backup-brain.ps1`. For every *local* brain it creates `backups\brain-backup-<brain>-<date>_<time>.zip`, holding a consistent, integrity-checked copy of the database and the original files. It is safe to run while the app is running. Cloud brains are skipped, because Azure SQL makes its own automatic backups. Options:
+  * `-Brain work` to back up one brain only;
   * `-Destination D:\Backups\Brain` to write somewhere else;
-  * `-Keep 14` to keep only the newest 14 backups;
+  * `-Keep 14` to keep only the newest 14 backups per brain;
   * `-DatabaseOnly` to skip the original files.
 
   If PowerShell blocks the script, use `powershell -ExecutionPolicy Bypass -File .\backup-brain.ps1`.
-* **Restore:** stop the app, unzip a backup, copy `brain.db` to `data\brain.db` and `files\` to `data\files\`, then start the app.
-* Settings, as environment variables: `BRAIN_PORT` (4321), `BRAIN_DB`, `BRAIN_WATCH`.
+* **Restore:** stop the app, unzip a backup, copy `brain.db` and `files\` back into the brain's data folder (for the Work brain that is `data\`), then start the app.
+* Settings, as environment variables: `BRAIN_PORT` (4321) and `BRAIN_HOME` (the folder holding `brains.json`, `data\` and the inbox folders; the default is the app folder). `BRAIN_DB` and `BRAIN_WATCH` only apply the first time, when `brains.json` is created.
 * The server listens on 127.0.0.1 only and rejects cross-site requests.
-* This folder is inside OneDrive, so the database is synced. Run the app on one machine at a time.
+* This folder is inside OneDrive, so local databases are synced. Run a local brain on one machine at a time. Cloud brains can be used from several laptops at once.
