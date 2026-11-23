@@ -397,6 +397,56 @@ function linksPanel(d) {
 }
 
 // ---------------------------------------------------------------- views
+// Timeline filter (source + related topic). Kept while you stay on the same thought, so it
+// survives the re-render after attaching a topic or editing an item; reset on navigation.
+let tlFilter = { thought: null, source: '', topic: '' };
+
+function timelinePanel(d, here) {
+  if (tlFilter.thought !== d.id) tlFilter = { thought: d.id, source: '', topic: '' };
+  const items = d.items;
+  const count = (map, key, val) => { const e = map.get(key) || { ...val, n: 0 }; e.n++; map.set(key, e); };
+  const sources = new Map(), topics = new Map();
+  for (const it of items) {
+    count(sources, it.source, { name: it.source });
+    for (const t of it.thoughts) if (t.id !== d.id) count(topics, String(t.id), t);
+  }
+  // Drop a stale selection (e.g. the last item with that topic was just detached).
+  if (tlFilter.source && !sources.has(tlFilter.source)) tlFilter.source = '';
+  if (tlFilter.topic && !topics.has(tlFilter.topic)) tlFilter.topic = '';
+
+  const byCount = m => [...m.entries()].sort((a, b) => b[1].n - a[1].n || a[1].name.localeCompare(b[1].name));
+  const dropdown = (allLabel, map, key) => {
+    const s = h('select', { title: allLabel },
+      h('option', { value: '' }, allLabel),
+      ...byCount(map).map(([k, v]) => h('option', { value: k }, `${v.name} (${v.n})`)));
+    s.value = tlFilter[key];
+    s.addEventListener('change', () => { tlFilter[key] = s.value; draw(); });
+    return s;
+  };
+  const title = h('span');
+  const list = h('div');
+  const clear = h('button', { class: 'link', onclick: () => { tlFilter.source = tlFilter.topic = ''; srcSel.value = topSel.value = ''; draw(); } }, 'Clear');
+  const srcSel = dropdown('All sources', sources, 'source');
+  const topSel = dropdown('All related topics', topics, 'topic');
+  const filters = h('div', { class: 'tl-filter' }, srcSel, topics.size ? topSel : null, clear);
+
+  function draw() {
+    const shown = items.filter(it =>
+      (!tlFilter.source || it.source === tlFilter.source) &&
+      (!tlFilter.topic || it.thoughts.some(t => String(t.id) === tlFilter.topic)));
+    const filtered = tlFilter.source || tlFilter.topic;
+    title.textContent = filtered ? `Timeline (${shown.length} of ${items.length})` : `Timeline (${items.length})`;
+    clear.hidden = !filtered;
+    list.replaceChildren(...(shown.length ? shown.map(it => itemCard(it))
+      : [h('div', { class: 'empty' }, items.length ? 'No items match this filter.' : 'Nothing captured for this thought yet. Press c, or drop a file here to attach it.')]));
+  }
+  draw();
+  return h('section', { class: 'panel' },
+    h('h3', {}, title, h('button', { class: 'add', onclick: () => captureModal({ thoughts: here }) }, '＋ capture here')),
+    items.length > 1 && (sources.size > 1 || topics.size) ? filters : null,
+    list);
+}
+
 async function renderThought(idParam) {
   const d = await api('GET', `/api/thoughts/${idParam}`);
   current.thought = { id: d.id, name: d.name, kind: d.kind };
@@ -487,9 +537,7 @@ async function renderThought(idParam) {
       doneActs.length && h('button', { class: 'link', onclick: e => { doneBox.hidden = !doneBox.hidden; e.target.textContent = (doneBox.hidden ? 'Show' : 'Hide') + ` ${doneActs.length} done`; } }, `Show ${doneActs.length} done`),
       doneBox)),
     h('div', { class: 'detail detail-2' },
-      h('section', { class: 'panel' },
-        h('h3', {}, `Timeline (${d.items.length})`, h('button', { class: 'add', onclick: () => captureModal({ thoughts: here }) }, '＋ capture here')),
-        d.items.length ? d.items.map(it => itemCard(it)) : h('div', { class: 'empty' }, 'Nothing captured for this thought yet. Press c, or drop a file here to attach it.')),
+      timelinePanel(d, here),
       linksPanel(d)));
   requestAnimationFrame(drawWires);
 }
