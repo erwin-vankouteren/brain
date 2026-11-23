@@ -10,10 +10,33 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 // ---------------------------------------------------------------- SQLite (local brains)
+const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const likeCache = new Map();
+function likeRegex(pattern, escape) {
+  const key = pattern + '\0' + (escape ?? '');
+  let re = likeCache.get(key);
+  if (re) return re;
+  let src = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (escape && c === escape && i + 1 < pattern.length) src += reEscape(pattern[++i]);
+    else if (c === '%') src += '[\\s\\S]*';
+    else if (c === '_') src += '[\\s\\S]';
+    else src += reEscape(c);
+  }
+  re = new RegExp(`^${src}$`, 'iu');
+  if (likeCache.size > 500) likeCache.clear();
+  likeCache.set(key, re);
+  return re;
+}
+
 export function openSqlite(file) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  // SQLite's own LIKE only ignores case for A-Z; this one also matches "été" with "Été" (as Azure SQL's _CI_ collation does).
+  db.function('like', { deterministic: true, varargs: true }, (pattern, value, escape) =>
+    pattern == null || value == null ? null : likeRegex(String(pattern), escape).test(String(value)) ? 1 : 0);
   let inTx = false;
   const d = {
     dialect: 'sqlite',

@@ -50,7 +50,7 @@ route('PATCH', '/api/brains/:id', ({ p, body }) => brains.update(p.id, body));
 route('DELETE', '/api/brains/:id', ({ p }) => brains.remove(p.id));
 
 broute('GET', '/stats', ({ ctx }) => ctx.brain.stats());
-broute('GET', '/search', ({ ctx }, q) => ctx.brain.search(q.get('q')));
+broute('GET', '/search', ({ ctx }, q) => ctx.brain.search(q.get('q'), { limit: Number(q.get('limit')) || 100 }));
 
 broute('GET', '/thoughts', ({ ctx }, q) => ctx.brain.listThoughts(q.get('q') || '', Number(q.get('limit') || 20)));
 broute('POST', '/thoughts', ({ ctx, body }) => ctx.brain.createThought(body.name, body.kind));

@@ -2,13 +2,14 @@
   --bg: #f6f7f9; --panel: #ffffff; --ink: #1d2330; --muted: #6b7385; --line: #e1e4ea; --hover: #eef1f6;
   --accent: #3b6fd8; --accent-ink: #ffffff; --danger: #c43d3d; --warn: #b7791f; --ok: #2f855a;
   --topic: #3b6fd8; --project: #8a4fd1; --person: #d16a2f; --org: #2f8a6b;
-  --wire: #b9c2d3; --shadow: 0 1px 3px rgba(20, 30, 50, .08), 0 4px 16px rgba(20, 30, 50, .05);
+  --mark: #fde68a; --mark-ink: #1d2330; --wire: #b9c2d3; --shadow: 0 1px 3px rgba(20, 30, 50, .08), 0 4px 16px rgba(20, 30, 50, .05);
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #14171d; --panel: #1c2028; --ink: #e4e7ee; --muted: #8f97a8; --line: #2c323d; --hover: #252a35;
     --accent: #6d97f0; --accent-ink: #0d1117; --danger: #ec6b6b; --warn: #e0a84a; --ok: #5cc28e;
     --topic: #6d97f0; --project: #b48af0; --person: #f0965c; --org: #5cc2a0; --wire: #3d4555;
+    --mark: #6b5a1a; --mark-ink: #fff4cc;
     --shadow: 0 1px 3px rgba(0, 0, 0, .4);
   }
 }
@@ -194,3 +195,13 @@ textarea.notes { width: 100%; min-height: 160px; resize: vertical; border-color:
   .form { grid-template-columns: 1fr; }
   .also { grid-template-columns: 1fr; }
 }
+
+/* search: highlighted terms, excerpts from long items, item rows in the search dropdown */
+mark { background: var(--mark); color: var(--mark-ink); border-radius: 2px; padding: 0 1px; }
+.snippets { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--mark); background: var(--bg); border-radius: 0 6px 6px 0; font-size: 13px; }
+.snippets div + div { margin-top: 4px; }
+.suggest .sugg-head { cursor: default; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; }
+.suggest .sugg-head:hover { background: none; }
+.sugg-item { display: flex; flex-direction: column; min-width: 0; }
+.sugg-item > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sugg-snip { font-size: 12px; }

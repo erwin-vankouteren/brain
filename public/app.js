@@ -224,10 +224,47 @@ function actionModal({ title = '', item = null, thoughts = [] } = {}) {
 async function openItem(id) { captureModal({ item: await api('GET', `/api/items/${id}`) }); }
 
 // ---------------------------------------------------------------- shared components
-function itemCard(it, { inbox = false } = {}) {
+// ---------------------------------------------------------------- search highlighting
+const termRegex = terms => terms?.length
+  ? new RegExp(terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).sort((a, b) => b.length - a.length).join('|'), 'giu')
+  : null;
+// Text with every search term wrapped in <mark> (DOM nodes, never HTML strings).
+function highlight(text, terms) {
+  const re = termRegex(terms);
+  text = String(text ?? '');
+  if (!re) return [text];
+  const out = []; let last = 0;
+  for (const m of text.matchAll(re)) {
+    if (!m[0]) continue;
+    if (m.index > last) out.push(text.slice(last, m.index));
+    out.push(h('mark', {}, m[0]));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+// Up to `max` short excerpts around the matches in a long text.
+function snippets(text, terms, max = 3, radius = 70) {
+  const re = termRegex(terms);
+  if (!re || !text) return [];
+  const out = []; let until = -1;
+  for (const m of text.matchAll(re)) {
+    if (m.index < until) continue;
+    let from = Math.max(0, m.index - radius), to = Math.min(text.length, m.index + m[0].length + radius);
+    if (from > 0) { const sp = text.indexOf(' ', from); if (sp > 0 && sp < m.index) from = sp + 1; }
+    if (to < text.length) { const sp = text.lastIndexOf(' ', to); if (sp > m.index + m[0].length) to = sp; }
+    out.push((from > 0 ? '…' : '') + text.slice(from, to).replace(/\s+/g, ' ').trim() + (to < text.length ? '…' : ''));
+    until = to;
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+function itemCard(it, { inbox = false, terms = null } = {}) {
   let card, lastSel = '';
-  const body = h('div', { class: 'card-body' }, it.body);
+  const body = h('div', { class: 'card-body' }, highlight(it.body, terms));
   const long = it.body.split('\n').length > 6 || it.body.length > 600;
+  const found = long && terms ? snippets(it.body, terms) : [];
   const more = long && h('button', { class: 'link', onclick: () => {
     body.classList.toggle('open'); more.textContent = body.classList.contains('open') ? 'Show less' : 'Show more';
   } }, 'Show more');
@@ -236,13 +273,15 @@ function itemCard(it, { inbox = false } = {}) {
     h('div', { class: 'card-head' },
       h('span', { class: 'badge' }, it.source),
       h('span', { class: 'muted' }, fmtDate(it.occurred_at)),
-      h('span', { class: 'card-title' }, it.title),
-      it.people && h('span', { class: 'muted' }, '· ' + it.people)),
+      h('span', { class: 'card-title' }, highlight(it.title, terms)),
+      it.people && h('span', { class: 'muted' }, '· ', highlight(it.people, terms))),
+    found.length > 0 && h('div', { class: 'snippets', title: 'Where your search terms occur in this item' },
+      found.map(s => h('div', {}, highlight(s, terms)))),
     it.file && /\.(png|jpe?g)$/i.test(it.file) && h('a', { href: apiUrl(`/api/items/${it.id}/file`), target: '_blank', title: 'Open image' },
       h('img', { class: 'thumb', src: apiUrl(`/api/items/${it.id}/file`), alt: it.title, loading: 'lazy' })),
     it.body && body, more,
     h('div', { class: 'card-foot' },
-      it.file && h('a', { class: 'from', href: apiUrl(`/api/items/${it.id}/file`), target: '_blank', title: 'Open the original file' }, `📎 ${it.file.replace(/^\d+-/, '')}`),
+      it.file && h('a', { class: 'from', href: apiUrl(`/api/items/${it.id}/file`), target: '_blank', title: 'Open the original file' }, '📎 ', highlight(it.file.replace(/^\d+-/, ''), terms)),
       ...it.thoughts.map(t => chip(t, async () => { await api('DELETE', `/api/items/${it.id}/thoughts/${t.id}`); render(); })),
       addTopicBtn(it.thoughts.map(t => t.id), async t => { await api('POST', `/api/items/${it.id}/thoughts/${t.id}`); render(); }),
       h('span', { class: 'spacer' }),
@@ -489,16 +528,26 @@ async function renderSearch(q) {
   const r = await api('GET', `/api/search?q=${encodeURIComponent(q)}`);
   document.title = `Search · Brain`;
   $('#search').value = q;
+  const count = k => `${r[k].length}${r.more[k] ? '+' : ''}`;
+  const moreNote = k => r.more[k] && h('div', { class: 'muted', style: 'margin:-10px 0 18px' }, `Showing the first ${r[k].length}. Add more words to narrow the search.`);
+  const total = r.thoughts.length + r.items.length + r.actions.length + r.weblinks.length;
   main.replaceChildren(
     h('h2', {}, `Search: “${q}”`),
-    h('h3', {}, `Thoughts (${r.thoughts.length})`),
+    h('div', { class: 'muted', style: 'margin:-6px 0 16px' },
+      r.terms.length > 1 ? ['Results contain all of: ', ...r.terms.flatMap((t, i) => [i ? ', ' : '', h('mark', {}, t)])] : null,
+      r.terms.length > 1 ? ' · ' : null,
+      total ? `${count('thoughts')} thoughts · ${count('items')} items · ${count('actions')} actions · ${count('weblinks')} links`
+        : 'Nothing found. Try fewer or shorter words.'),
+    h('h3', {}, `Thoughts (${count('thoughts')})`),
     h('div', { class: 'card-foot', style: 'margin-bottom:18px' }, r.thoughts.length ? r.thoughts.map(t => chip(t)) : h('span', { class: 'empty' }, 'None')),
-    h('h3', {}, `Links (${r.weblinks.length})`),
-    h('section', { class: 'panel', style: 'margin-bottom:18px' }, r.weblinks.length ? r.weblinks.map(l => linkRow(l, { showThought: true })) : h('div', { class: 'empty' }, 'None')),
-    h('h3', {}, `Actions (${r.actions.length})`),
+    h('h3', { title: 'Everything captured: pasted text, mails, transcripts, and the text read from PDFs and images' }, `Items (${count('items')})`),
+    ...(r.items.length ? r.items.map(it => itemCard(it, { inbox: it.status === 'inbox', terms: r.terms })) : [h('div', { class: 'empty', style: 'margin-bottom:18px' }, 'None')]),
+    moreNote('items'),
+    h('h3', { style: 'margin-top:18px' }, `Actions (${count('actions')})`),
     h('section', { class: 'panel', style: 'margin-bottom:18px' }, r.actions.length ? r.actions.map(actionRow) : h('div', { class: 'empty' }, 'None')),
-    h('h3', {}, `Items (${r.items.length})`),
-    ...(r.items.length ? r.items.map(it => itemCard(it, { inbox: it.status === 'inbox' })) : [h('div', { class: 'empty' }, 'None')]));
+    moreNote('actions'),
+    h('h3', {}, `Links (${count('weblinks')})`),
+    h('section', { class: 'panel', style: 'margin-bottom:18px' }, r.weblinks.length ? r.weblinks.map(l => linkRow(l, { showThought: true })) : h('div', { class: 'empty' }, 'None')));
 }
 
 // ---------------------------------------------------------------- routing & sidebar
@@ -549,24 +598,53 @@ window.addEventListener('resize', () => drawWires && drawWires());
 // ---------------------------------------------------------------- header search
 (() => {
   const input = $('#search'), box = $('#search-suggest');
-  let opts = [], active = 0, seq = 0;
-  const go = o => { box.hidden = true; input.blur(); location.hash = o.search ? `#/search/${encodeURIComponent(o.q)}` : `#/t/${o.id}`; };
+  let opts = [], active = 0, seq = 0, timer = null, terms = [];
+  // Options: "search everything", matching thoughts, then items whose text contains the words.
+  const go = o => {
+    box.hidden = true; input.blur();
+    location.hash = o.search || o.item ? `#/search/${encodeURIComponent(o.q)}` : `#/t/${o.id}`;
+  };
+  const row = o => o.search ? `🔍 Search everything for “${o.q}”`
+    : o.item ? h('span', { class: 'sugg-item' },
+        h('span', {}, '📄 ', highlight(o.item.title || '(untitled)', terms), h('span', { class: 'muted' }, ` · ${o.item.source} · ${fmtDate(o.item.occurred_at)}`)),
+        o.snippet && h('span', { class: 'muted sugg-snip' }, highlight(o.snippet, terms)))
+    : o.name;
   const draw = () => {
-    box.replaceChildren(...opts.map((o, i) => h('div', { class: (i === active ? 'active ' : '') + (o.search ? '' : `kdot k-${o.kind}`), onmousedown: e => { e.preventDefault(); go(o); } },
-      o.search ? `🔍 Search everything for “${o.q}”` : o.name)));
+    const nodes = [];
+    opts.forEach((o, i) => {
+      if (o.item && !opts[i - 1]?.item) nodes.push(h('div', { class: 'sugg-head' }, 'Items containing these words'));
+      nodes.push(h('div', { class: (i === active ? 'active ' : '') + (o.search || o.item ? '' : `kdot k-${o.kind}`), onmousedown: e => { e.preventDefault(); go(o); } }, row(o)));
+    });
+    box.replaceChildren(...nodes);
     box.hidden = !opts.length;
   };
-  input.addEventListener('input', async () => {
+  input.addEventListener('input', () => {
     const q = input.value.trim(), my = ++seq;
+    clearTimeout(timer);
     if (!q) { opts = []; return draw(); }
-    const res = await api('GET', `/api/thoughts?limit=8&q=${encodeURIComponent(q)}`);
-    if (my !== seq) return;
-    opts = [{ search: true, q }, ...res]; active = res.length && res[0].name.toLowerCase() === q.toLowerCase() ? 1 : 0; draw();
+    timer = setTimeout(async () => {
+      const [res, found] = await Promise.all([
+        api('GET', `/api/thoughts?limit=8&q=${encodeURIComponent(q)}`),
+        api('GET', `/api/search?limit=5&q=${encodeURIComponent(q)}`).catch(() => null),
+      ]);
+      if (my !== seq) return;
+      terms = found?.terms || [];
+      const items = (found?.items || []).map(it => ({ item: it, q, snippet: snippets(it.body, terms, 1, 50)[0] }));
+      opts = [{ search: true, q }, ...res, ...items];
+      active = res.length && res[0].name.toLowerCase() === q.toLowerCase() ? 1 : 0;
+      draw();
+    }, 200);
   });
   input.addEventListener('keydown', e => {
     if (e.key === 'ArrowDown') { active = Math.min(active + 1, opts.length - 1); draw(); e.preventDefault(); }
     else if (e.key === 'ArrowUp') { active = Math.max(active - 1, 0); draw(); e.preventDefault(); }
-    else if (e.key === 'Enter' && opts[active]) { e.preventDefault(); go(opts[active]); }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      const q = input.value.trim();
+      if (!q) return;
+      // Suggestions may still be loading or belong to older text: then just search.
+      go(opts[0]?.q === q && opts[active] ? opts[active] : { search: true, q });
+    }
     else if (e.key === 'Escape') { box.hidden = true; input.blur(); }
   });
   input.addEventListener('blur', () => setTimeout(() => (box.hidden = true), 100));

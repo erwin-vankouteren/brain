@@ -87,7 +87,7 @@ Each thought has a **Links** box next to its Timeline. Paste a link and press En
 * **Synced OneDrive file on this PC:** in File Explorer, right-click the file and choose *Copy as path*, then paste. Clicking the link opens the file in its own app (Word, Excel, …), and 📂 shows it in its folder. The link stops working if the file is moved or renamed.
 * **Any web page:** paste the address.
 
-Links appear in search, by title and by address.
+Links appear in search, by title and by address. Thoughts are found by name and by their notes.
 
 ## Workflow suggestion
 
@@ -95,6 +95,16 @@ Links appear in search, by title and by address.
 2. Once a day, empty the Inbox. Select a sentence and click **→ Action** for every to-do, then click **Move to…** to attach the item to a topic or person, which also removes it from the Inbox. To attach an item to several topics, use **＋ topic** first, then **✓ Done**.
 3. Before a meeting, open the topic or person to see notes, open actions and the timeline.
 4. Check **Actions**, grouped by Overdue, Today, Next 7 days and so on. Use *Waiting for* for things others owe you.
+
+## Search
+
+Type in the search box at the top (or press `/`). While you type, the list shows matching thoughts and the first items whose text contains your words. Press Enter, or choose *Search everything*, for the full results: thoughts, items, actions and links.
+
+* **Items are searched in their full text:** everything you captured or pasted, mail bodies, meeting transcripts, the text read from PDFs and images, the people, and the name of the attached file.
+* **Every word must occur** somewhere in the result, in any order: `jan budget` finds the chat where Jan talks about the budget. Put words in quotes to find them as one phrase: `"steering committee"`.
+* Upper and lower case don't matter, including accented letters (`café` finds `Café`).
+* The words are highlighted in the results. For long items, such as a transcript, the lines around the matches are shown above the text.
+* Each section shows up to 100 results. If there are more, add a word to narrow the search.
 
 ## Shortcuts
 

@@ -80,6 +80,18 @@ const T = `t.id, t.name, t.kind`;
 const chunks = (arr, n = 500) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
 const marks = n => Array(n).fill('?').join(',');
 
+// 'budget "steering committee" Q3' -> ['budget', 'steering committee', 'Q3'] (at most 10 terms, duplicates removed)
+export function searchTerms(q) {
+  const out = [];
+  for (const m of String(q || '').matchAll(/"([^"]*)"?|(\S+)/g)) {
+    const t = (m[1] ?? m[2]).trim().slice(0, 200);
+    if (t && !out.some(x => x.toLowerCase() === t.toLowerCase())) out.push(t);
+  }
+  return out.slice(0, 10);
+}
+// A "contains" pattern for LIKE ... ESCAPE '\' that treats % _ [ in the search text literally (SQLite and T-SQL).
+const likePattern = t => `%${t.replace(/[\\%_[]/g, '\\$&')}%`;
+
 export class Brain {
   constructor(driver) { this.d = driver; }
 
@@ -370,21 +382,36 @@ export class Brain {
   async deleteWeblink(id) { await this.d.run(`DELETE FROM weblinks WHERE id=?`, id); return { ok: true }; }
 
   // ---- search & stats
-  async search(q) {
-    q = String(q || '').trim();
-    if (!q) return { thoughts: [], items: [], actions: [], weblinks: [] };
-    const like = `%${q}%`, d = this.d;
+  // Every word must occur somewhere in the record (in any of its fields); "quoted text" is matched as one phrase.
+  // Items are searched in their full text: pasted text, mail bodies, transcripts, and the text read from PDFs and images.
+  async search(q, { limit = 100 } = {}) {
+    const terms = searchTerms(q);
+    const empty = { terms, thoughts: [], items: [], actions: [], weblinks: [], more: {} };
+    if (!terms.length) return empty;
+    limit = Math.max(1, Math.min(limit | 0 || 100, 500));
+    const d = this.d;
+    const where = fields => {
+      const sql = terms.map(() => '(' + fields.map(f => `${f} LIKE ? ESCAPE '\\'`).join(' OR ') + ')').join(' AND ');
+      return [sql, terms.flatMap(t => fields.map(() => likePattern(t)))];
+    };
+    const [tw, tp] = where(['name', 'notes']);
+    const [ww, wp] = where(['w.title', 'w.url']);
+    const [iw, ip] = where(['title', 'body', 'people', '[file]']);
+    const [aw, ap] = where(['a.title', 'a.notes', 'a.owner']);
+    const first = likePattern(terms[0]);
     const [thoughts, weblinks, itemRows, actionRows] = await Promise.all([
-      this.listThoughts(q, 50),
+      d.all(`SELECT id,name,kind FROM thoughts WHERE ${tw}
+             ORDER BY CASE WHEN name LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END, name ${d.limit(limit + 1)}`, ...tp, first),
       d.all(`SELECT w.*, t.name AS thought_name, t.kind AS thought_kind FROM weblinks w JOIN thoughts t ON t.id=w.thought_id
-             WHERE w.title LIKE ? OR w.url LIKE ? ORDER BY lower(w.title) ${d.limit(100)}`, like, like),
-      d.all(`SELECT * FROM items WHERE title LIKE ? OR body LIKE ? OR people LIKE ? ORDER BY occurred_at DESC, id DESC ${d.limit(100)}`, like, like, like),
-      d.all(`SELECT a.*, i.title AS item_title FROM actions a LEFT JOIN items i ON i.id=a.item_id
-             WHERE a.title LIKE ? OR a.notes LIKE ? OR a.owner LIKE ?
-             ORDER BY CASE WHEN a.status='done' THEN 1 ELSE 0 END, COALESCE(a.due,'9999'), a.id ${d.limit(100)}`, like, like, like),
+             WHERE ${ww} ORDER BY lower(w.title) ${d.limit(limit + 1)}`, ...wp),
+      d.all(`SELECT * FROM items WHERE ${iw} ORDER BY occurred_at DESC, id DESC ${d.limit(limit + 1)}`, ...ip),
+      d.all(`SELECT a.*, i.title AS item_title FROM actions a LEFT JOIN items i ON i.id=a.item_id WHERE ${aw}
+             ORDER BY CASE WHEN a.status='done' THEN 1 ELSE 0 END, COALESCE(a.due,'9999'), a.id ${d.limit(limit + 1)}`, ...ap),
     ]);
-    const [items, actions] = await Promise.all([this.withItemThoughts(itemRows), this.withActionThoughts(actionRows)]);
-    return { thoughts, weblinks: weblinks.map(withKind), items, actions };
+    const more = {}, cut = (name, rows) => { if (rows.length > limit) { more[name] = true; rows.length = limit; } return rows; };
+    const [items, actions] = await Promise.all([
+      this.withItemThoughts(cut('items', itemRows)), this.withActionThoughts(cut('actions', actionRows))]);
+    return { terms, thoughts: cut('thoughts', thoughts), weblinks: cut('weblinks', weblinks).map(withKind), items, actions, more };
   }
   async stats() {
     const d = this.d, n = r => r?.n ?? 0;
